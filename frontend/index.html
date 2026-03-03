@@ -1,0 +1,643 @@
+<!doctype html>
+<html lang="sk">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>AI To-Do Assistant</title>
+  <style>
+    :root{
+      --bg:#0b0f17;
+      --panel:#111827;
+      --card:#0f172a;
+      --line:#1f2a44;
+      --text:#e5e7eb;
+      --muted:#9ca3af;
+      --chip:#0b1223;
+      --danger:#ef4444;
+      --ok:#22c55e;
+      --warn:#f59e0b;
+      --info:#60a5fa;
+    }
+
+    *{ box-sizing:border-box; }
+    body{
+      margin:0;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      background: linear-gradient(180deg, var(--bg), #070a10);
+      color: var(--text);
+    }
+
+    .wrap{ max-width: 1100px; margin: 28px auto; padding: 0 18px; }
+
+    h1{ margin: 0 0 6px; font-size: 34px; letter-spacing: .2px; }
+    h2{ margin: 0 0 12px; font-size: 18px; }
+    p{ margin: 0; }
+    code{ background: #0b1223; border: 1px solid var(--line); padding: 2px 6px; border-radius: 8px; color: #cbd5e1; }
+
+    .muted{ color: var(--muted); font-size: 14px; }
+    .topbar{
+      display:flex; justify-content:space-between; align-items:flex-end;
+      gap: 14px; margin-bottom: 18px;
+    }
+    .topbar .right{
+      display:flex; gap:10px; align-items:center; flex-wrap:wrap;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .grid{
+      display:grid;
+      grid-template-columns: 1.1fr .9fr;
+      gap: 16px;
+      margin-top: 14px;
+    }
+    @media (max-width: 900px){
+      .grid{ grid-template-columns: 1fr; }
+    }
+
+    .panel{
+      background: rgba(17,24,39,.75);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 14px;
+      box-shadow: 0 12px 30px rgba(0,0,0,.35);
+      backdrop-filter: blur(8px);
+    }
+
+    textarea, input, select{
+      width:100%;
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: #0b1223;
+      color: var(--text);
+      outline: none;
+    }
+    textarea{ min-height: 92px; resize: vertical; }
+    label{ display:block; margin: 10px 0 6px; color: var(--muted); font-size: 13px; }
+
+    .row{ display:flex; gap: 10px; align-items: stretch; }
+    .row > *{ flex: 1; }
+    .row .btn-col{ flex: 0 0 140px; display:flex; }
+
+    button{
+      appearance:none;
+      border:1px solid var(--line);
+      background: #0b1223;
+      color: var(--text);
+      padding: 10px 14px;
+      border-radius: 12px;
+      cursor:pointer;
+      transition: transform .05s ease, border-color .15s ease, background .15s ease;
+      font-weight: 600;
+    }
+    button:hover{ border-color: #2d3a5d; background:#0c1428; }
+    button:active{ transform: translateY(1px); }
+    button.primary{ background: #182544; border-color:#2b3a62; }
+    button.primary:hover{ background:#1a2a4d; }
+    button.danger{ border-color: rgba(239,68,68,.4); }
+    button.danger:hover{ background: rgba(239,68,68,.08); border-color: rgba(239,68,68,.65); }
+    button.ghost{ background: transparent; }
+    button.small{ padding: 8px 10px; border-radius: 10px; font-size: 13px; }
+
+    .section-title{
+      display:flex; justify-content:space-between; align-items:center; gap: 12px;
+      margin-top: 4px;
+    }
+
+    .toolbar{
+      display:flex; gap: 10px; flex-wrap:wrap; align-items:center;
+    }
+
+    .stats{
+      display:flex; gap: 10px; flex-wrap:wrap;
+      margin-top: 10px;
+    }
+    .stat{
+      background: var(--chip);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 12px;
+      color: #cbd5e1;
+    }
+
+    .split{
+      display:flex; gap: 10px; flex-wrap:wrap;
+    }
+    .split > div{ flex:1; min-width: 180px; }
+
+    /* Tasks */
+    .list-head{
+      display:flex; justify-content:space-between; align-items:center; gap: 12px;
+      margin-top: 18px;
+    }
+    .list{
+      display:grid;
+      grid-template-columns: 1fr;
+      gap: 12px;
+      margin-top: 10px;
+    }
+
+    .task{
+      background: rgba(15,23,42,.75);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 14px;
+      box-shadow: 0 10px 24px rgba(0,0,0,.22);
+    }
+    .task-top{
+      display:flex; justify-content:space-between; align-items:flex-start;
+      gap: 12px;
+    }
+    .task-title{
+      font-size: 16px;
+      font-weight: 800;
+      line-height: 1.2;
+      margin: 2px 0 6px;
+    }
+    .task-meta{
+      display:flex; gap: 8px; flex-wrap:wrap; align-items:center;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .chips{
+      display:flex; gap: 6px; flex-wrap:wrap; margin-top: 10px;
+    }
+    .chip{
+      background: var(--chip);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 12px;
+      color: #cbd5e1;
+      display:inline-flex; gap: 8px; align-items:center;
+    }
+    .chip.prio-high{ border-color: rgba(239,68,68,.55); }
+    .chip.prio-medium{ border-color: rgba(245,158,11,.55); }
+    .chip.prio-low{ border-color: rgba(34,197,94,.55); }
+    .chip.done{ border-color: rgba(34,197,94,.5); }
+
+    .task-step{
+      margin-top: 10px;
+      color:#d1d5db;
+      font-size: 13px;
+      border-top: 1px solid rgba(31,42,68,.6);
+      padding-top: 10px;
+    }
+
+    .task-actions{
+      display:flex; gap: 8px; flex-wrap:wrap; justify-content:flex-end;
+      margin-top: 0;
+      min-width: 260px;
+    }
+    @media (max-width: 560px){
+      .task-top{ flex-direction:column; }
+      .task-actions{ justify-content:flex-start; min-width:auto; }
+    }
+
+    .empty{
+      padding: 18px;
+      border-radius: 16px;
+      border: 1px dashed rgba(31,42,68,.9);
+      color: var(--muted);
+      background: rgba(15,23,42,.35);
+    }
+
+    .two-col{
+      display:grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-top: 10px;
+    }
+    @media (max-width: 900px){
+      .two-col{ grid-template-columns: 1fr; }
+    }
+
+    .minihead{
+      display:flex; justify-content:space-between; align-items:center;
+      margin: 4px 0 8px;
+      color: #cbd5e1;
+      font-weight: 700;
+      font-size: 13px;
+    }
+
+    .err{
+      margin-top: 10px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid rgba(239,68,68,.5);
+      background: rgba(239,68,68,.08);
+      color: #fecaca;
+      display:none;
+      white-space: pre-wrap;
+    }
+
+    .ok{
+      margin-top: 10px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid rgba(34,197,94,.5);
+      background: rgba(34,197,94,.08);
+      color: #bbf7d0;
+      display:none;
+      white-space: pre-wrap;
+    }
+
+    .foot{
+      margin-top: 18px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <div>
+        <h1>AI To-Do Assistant</h1>
+        <p class="muted">
+          Rýchle pridanie úloh cez <code>/smart_add</code> a správa úloh cez <code>/tasks</code>.
+        </p>
+      </div>
+      <div class="right">
+        <span id="serverBadge">● server</span>
+        <span id="nowBadge"></span>
+      </div>
+    </div>
+
+    <div class="grid">
+      <!-- Left: Add + List -->
+      <div class="panel">
+        <div class="section-title">
+          <h2>Pridať úlohy (smart_add)</h2>
+          <div class="toolbar">
+            <button class="small ghost" id="btnExample">Vložiť príklad</button>
+            <button class="small ghost" id="btnClearText">Vymazať</button>
+          </div>
+        </div>
+
+        <div class="row">
+          <textarea id="txt" placeholder="- zavolať klientovi&#10;- kúpiť darček&#10;- poslať faktúru"></textarea>
+          <div class="btn-col">
+            <button class="primary" id="btnAdd" style="width:100%;">Pridať</button>
+          </div>
+        </div>
+
+        <div class="ok" id="addOk"></div>
+        <div class="err" id="addErr"></div>
+
+        <div class="list-head">
+          <h2>Úlohy</h2>
+          <div class="toolbar">
+            <button class="small" id="btnReload">Obnoviť</button>
+          </div>
+        </div>
+
+        <div class="stats" id="stats"></div>
+        <div class="list" id="list"></div>
+
+        <div class="foot">
+          Tip: vpravo nastav filtre a klikni „Obnoviť“. V kartách môžeš označiť done, nastaviť deadline = dnes, alebo zmazať.
+        </div>
+      </div>
+
+      <!-- Right: Filters + Today -->
+      <div class="panel">
+        <div class="two-col">
+          <div>
+            <div class="section-title" style="margin-bottom:6px;">
+              <h2>Filtrovanie</h2>
+            </div>
+
+            <label>Done</label>
+            <select id="done">
+              <option value="">(všetko)</option>
+              <option value="false">nedokončené</option>
+              <option value="true">dokončené</option>
+            </select>
+
+            <label>Search (q)</label>
+            <input id="q" placeholder="napr. zavolať" />
+
+            <label>Tag</label>
+            <input id="tag" placeholder="napr. práca" />
+
+            <label>Priority</label>
+            <select id="priority">
+              <option value="">(všetko)</option>
+              <option value="high">high</option>
+              <option value="medium">medium</option>
+              <option value="low">low</option>
+            </select>
+
+            <label>Sort</label>
+            <select id="sort">
+              <option value="newest">newest</option>
+              <option value="oldest">oldest</option>
+              <option value="prio">prio</option>
+              <option value="estimate">estimate</option>
+            </select>
+
+            <div style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap;">
+              <button id="btnLoad" class="primary">Načítať tasks</button>
+              <button id="btnReset" class="ghost">Reset filtrov</button>
+            </div>
+
+            <div class="err" id="loadErr"></div>
+          </div>
+
+          <div>
+            <div class="section-title" style="margin-bottom:6px;">
+              <h2>Dnes</h2>
+              <button class="small" id="btnToday">Načítať</button>
+            </div>
+
+            <label>
+              <input type="checkbox" id="includeDoneToday" style="width:auto; margin-right:8px;" />
+              Zobraziť aj dokončené (include_done)
+            </label>
+
+            <div class="err" id="todayErr"></div>
+
+            <div id="todayBox" style="margin-top:10px;"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+
+  function setNow(){
+    const d = new Date();
+    $("nowBadge").textContent = d.toLocaleString("sk-SK");
+  }
+  setNow();
+  setInterval(setNow, 1000 * 30);
+
+  function esc(s){
+    return String(s ?? "")
+      .replaceAll("&","&amp;")
+      .replaceAll("<","&lt;")
+      .replaceAll(">","&gt;")
+      .replaceAll('"',"&quot;")
+      .replaceAll("'","&#039;");
+  }
+
+  async function api(path, opts={}){
+    const res = await fetch(path, {
+      headers: { "Content-Type":"application/json" },
+      ...opts
+    });
+
+    if(!res.ok){
+      const t = await res.text();
+      throw new Error(`${res.status} ${res.statusText}: ${t}`);
+    }
+
+    // /tasks DELETE vracia JSON, všetko je JSON
+    return res.json();
+  }
+
+  function prioChip(p){
+    const cls = p === "high" ? "prio-high" : p === "medium" ? "prio-medium" : "prio-low";
+    return `<span class="chip ${cls}">${esc(p).toUpperCase()}</span>`;
+  }
+
+  function deadlineChip(d){
+    if(!d) return "";
+    return `<span class="chip">📅 ${esc(d)}</span>`;
+  }
+
+  function doneChip(done){
+    return done ? `<span class="chip done">✅ DONE</span>` : "";
+  }
+
+  function tagsChips(tags){
+    if(!tags || !tags.length) return "";
+    return tags.map(t => `<span class="chip">#${esc(t)}</span>`).join("");
+  }
+
+  function minsChip(m){
+    return `<span class="chip">⏱ ${esc(m)} min</span>`;
+  }
+
+  function renderTask(t){
+    return `
+      <div class="task">
+        <div class="task-top">
+          <div style="flex:1;min-width:240px;">
+            <div class="task-title">${t.done ? "✅ " : ""}${esc(t.title)}</div>
+            <div class="task-meta">
+              ${minsChip(t.estimate_min)}
+              ${deadlineChip(t.deadline)}
+              <span class="chip">ID ${esc(t.id)}</span>
+              ${doneChip(t.done)}
+            </div>
+
+            <div class="chips" style="margin-top:10px;">
+              ${prioChip(t.priority)}
+              ${tagsChips(t.tags)}
+            </div>
+
+            <div class="task-step">👉 ${esc(t.next_step)}</div>
+          </div>
+
+          <div class="task-actions">
+            <button class="small" onclick="toggleDone(${t.id})">
+              ${t.done ? "Označiť ako nedokončené" : "Označiť ako dokončené"}
+            </button>
+            <button class="small" onclick="setDeadlineToday(${t.id})">Deadline = dnes</button>
+            <button class="small danger" onclick="delTask(${t.id})">Zmazať</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  function showErr(el, msg){
+    el.style.display = "block";
+    el.textContent = msg;
+  }
+  function hideErr(el){
+    el.style.display = "none";
+    el.textContent = "";
+  }
+  function showOk(el, msg){
+    el.style.display = "block";
+    el.textContent = msg;
+  }
+  function hideOk(el){
+    el.style.display = "none";
+    el.textContent = "";
+  }
+
+  async function loadStats(){
+    const st = await api("/stats");
+    $("stats").innerHTML = `
+      <span class="stat">Total: <b>${st.total}</b></span>
+      <span class="stat">Done: <b>${st.done}</b></span>
+      <span class="stat">Pending: <b>${st.pending}</b></span>
+      <span class="stat">High: <b>${st.by_priority?.high ?? 0}</b></span>
+      <span class="stat">Medium: <b>${st.by_priority?.medium ?? 0}</b></span>
+      <span class="stat">Low: <b>${st.by_priority?.low ?? 0}</b></span>
+    `;
+  }
+
+  function buildTasksQuery(){
+    const params = new URLSearchParams();
+    if($("done").value !== "") params.set("done", $("done").value);
+    if($("q").value.trim()) params.set("q", $("q").value.trim());
+    if($("tag").value.trim()) params.set("tag", $("tag").value.trim());
+    if($("priority").value) params.set("priority", $("priority").value);
+    if($("sort").value) params.set("sort", $("sort").value);
+    return params.toString();
+  }
+
+  async function loadTasks(){
+    hideErr($("loadErr"));
+
+    const qs = buildTasksQuery();
+    const data = await api(qs ? `/tasks?${qs}` : "/tasks");
+
+    if(!data.length){
+      $("list").innerHTML = `<div class="empty">Žiadne úlohy pre aktuálne filtre.</div>`;
+    } else {
+      $("list").innerHTML = data.map(renderTask).join("");
+    }
+
+    await loadStats();
+  }
+
+  async function loadToday(){
+    hideErr($("todayErr"));
+    const include = $("includeDoneToday").checked ? "true" : "false";
+    const data = await api(`/today?include_done=${include}`);
+
+    const header = `
+      <div class="stats">
+        <span class="stat">Today: <b>${data.today.length}</b></span>
+        <span class="stat">Overdue: <b>${data.overdue.length}</b></span>
+        <span class="stat">Minutes today: <b>${data.total_estimated_minutes_today}</b></span>
+      </div>
+    `;
+
+    const todayHtml = data.today.length
+      ? data.today.map(renderTask).join("")
+      : `<div class="empty">Žiadne úlohy na dnes.</div>`;
+
+    const overdueHtml = data.overdue.length
+      ? data.overdue.map(renderTask).join("")
+      : `<div class="empty">Žiadne oneskorené úlohy.</div>`;
+
+    $("todayBox").innerHTML = `
+      ${header}
+      <div style="margin-top:12px;">
+        <div class="minihead"><span>Today</span></div>
+        ${todayHtml}
+      </div>
+      <div style="margin-top:12px;">
+        <div class="minihead"><span>Overdue</span></div>
+        ${overdueHtml}
+      </div>
+    `;
+  }
+
+  async function addSmart(){
+    hideErr($("addErr"));
+    hideOk($("addOk"));
+
+    const text = $("txt").value.trim();
+    if(!text){
+      showErr($("addErr"), "Napíš text s úlohami (každý riadok = jedna úloha).");
+      return;
+    }
+
+    const res = await api("/smart_add", {
+      method:"POST",
+      body: JSON.stringify({ text })
+    });
+
+    showOk($("addOk"), `Vložené ID: ${res.inserted_ids.join(", ")}`);
+    $("txt").value = "";
+    await loadTasks();
+  }
+
+  async function toggleDone(id){
+    await api(`/tasks/${id}/done`, { method:"PATCH" });
+    await loadTasks();
+  }
+
+  async function delTask(id){
+    await api(`/tasks/${id}`, { method:"DELETE" });
+    await loadTasks();
+  }
+
+  async function setDeadlineToday(id){
+    const d = new Date();
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth()+1).padStart(2,"0");
+    const dd = String(d.getDate()).padStart(2,"0");
+    const iso = `${yyyy}-${mm}-${dd}`;
+
+    await api(`/tasks/${id}`, {
+      method:"PATCH",
+      body: JSON.stringify({ deadline: iso })
+    });
+
+    await loadTasks();
+  }
+
+  function resetFilters(){
+    $("done").value = "";
+    $("q").value = "";
+    $("tag").value = "";
+    $("priority").value = "";
+    $("sort").value = "newest";
+  }
+
+  // server badge ping
+  async function ping(){
+    try{
+      await api("/");
+      $("serverBadge").textContent = "● server: OK";
+      $("serverBadge").style.color = "#86efac";
+    }catch(e){
+      $("serverBadge").textContent = "● server: OFF";
+      $("serverBadge").style.color = "#fca5a5";
+    }
+  }
+  ping();
+
+  // Wiring
+  $("btnAdd").addEventListener("click", () => addSmart().catch(e => showErr($("addErr"), String(e))));
+  $("btnLoad").addEventListener("click", () => loadTasks().catch(e => showErr($("loadErr"), String(e))));
+  $("btnReload").addEventListener("click", () => loadTasks().catch(e => showErr($("loadErr"), String(e))));
+  $("btnToday").addEventListener("click", () => loadToday().catch(e => showErr($("todayErr"), String(e))));
+  $("btnReset").addEventListener("click", () => { resetFilters(); loadTasks().catch(e => showErr($("loadErr"), String(e))); });
+
+  $("btnExample").addEventListener("click", () => {
+    $("txt").value = "- zavolať klientovi\n- kúpiť mlieko\n- poslať faktúru\n- upratať izbu";
+  });
+  $("btnClearText").addEventListener("click", () => { $("txt").value = ""; });
+
+  // Auto refresh tasks when filters change (nice UX)
+  ["done","priority","sort"].forEach(id => {
+    $(id).addEventListener("change", () => loadTasks().catch(e => showErr($("loadErr"), String(e))));
+  });
+  ["q","tag"].forEach(id => {
+    let t = null;
+    $(id).addEventListener("input", () => {
+      if(t) clearTimeout(t);
+      t = setTimeout(() => loadTasks().catch(e => showErr($("loadErr"), String(e))), 250);
+    });
+  });
+
+  // Initial load
+  loadTasks().catch(e => showErr($("loadErr"), String(e)));
+</script>
+</body>
+</html>
