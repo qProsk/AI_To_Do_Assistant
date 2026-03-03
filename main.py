@@ -1,13 +1,12 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Literal, Dict, Any, Tuple
 import re
 import os
 import json
 import traceback
 import sqlite3
-from datetime import datetime
-
+from datetime import datetime, date
 from dotenv import load_dotenv
 
 try:
@@ -16,9 +15,7 @@ except Exception:
     OpenAI = None  # type: ignore
 
 
-# =========================
-# ENV
-# =========================
+# ---------- ENV ----------
 load_dotenv()
 
 API_KEY = os.getenv("OPENAI_API_KEY")
@@ -32,21 +29,23 @@ if API_KEY and OpenAI is not None:
     client = OpenAI(api_key=API_KEY)
 
 
-# =========================
-# FASTAPI APP (Swagger tags order)
-# =========================
-openapi_tags = [
-    {"name": "System", "description": "Healthcheck a systémové endpointy"},
-    {"name": "Parser", "description": "Prevod textu na štruktúrované tasky"},
-    {"name": "Tasks", "description": "CRUD operácie nad tasks v databáze"},
-]
+# ---------- APP ----------
+app = FastAPI(
+    title="AI To-Do Assistant",
+    version="1.0.0",
+    description="Prevod textu na tasky + jednoduché CRUD nad SQLite",
+)
 
-app = FastAPI(openapi_tags=openapi_tags)
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
+app.mount("/frontend", StaticFiles(directory="frontend"), name="frontend")
 
-# =========================
-# DB
-# =========================
+@app.get("/app", include_in_schema=False)
+def app_page():
+    return FileResponse("frontend/index.html")
+
+# ---------- DB ----------
 DB_PATH = "todo.db"
 
 
@@ -81,25 +80,57 @@ def init_db():
 init_db()
 
 
-# =========================
-# Pydantic MODELS
-# =========================
+# ---------- HELPERS ----------
+def dumps_tags(tags: List[str]) -> str:
+    # Dôležité: nech v DB ostane diakritika a tag filter funguje
+    return json.dumps(tags, ensure_ascii=False)
+
+
+def loads_tags(s: str) -> List[str]:
+    try:
+        return json.loads(s) if s else []
+    except Exception:
+        return []
+
+
+def row_to_taskrow(r: sqlite3.Row) -> "TaskRow":
+    return TaskRow(
+        id=r["id"],
+        title=r["title"],
+        priority=r["priority"],
+        estimate_min=r["estimate_min"],
+        deadline=r["deadline"],
+        tags=loads_tags(r["tags_json"]),
+        next_step=r["next_step"],
+        done=bool(r["done"]),
+        created_at=r["created_at"],
+    )
+
+
+def today_yyyy_mm_dd() -> str:
+    return date.today().isoformat()
+
+
+# ---------- MODELS ----------
+Priority = Literal["high", "medium", "low"]
+SortMode = Literal["newest", "oldest", "prio", "estimate"]
+
 class ParseRequest(BaseModel):
     text: str = Field(..., min_length=1)
 
 
 class Task(BaseModel):
     title: str
-    priority: str  # "high" | "medium" | "low"
+    priority: Priority
     estimate_min: int
-    deadline: Optional[str] = None
+    deadline: Optional[str] = None  # YYYY-MM-DD alebo None
     tags: List[str] = Field(default_factory=list)
     next_step: str
 
 
 class ParseResponse(BaseModel):
     tasks: List[Task]
-    mode: str  # "fast" | "ai" | "auto-fast" | "auto-ai" | "smart-add"
+    mode: str  # "fast" | "ai" | "auto-fast" | "auto-ai" | ...
 
 
 class TaskRow(Task):
@@ -118,16 +149,28 @@ class SaveTasksResponse(BaseModel):
 
 class UpdateTaskRequest(BaseModel):
     title: Optional[str] = None
-    priority: Optional[str] = None
+    priority: Optional[Priority] = None
     estimate_min: Optional[int] = None
     deadline: Optional[str] = None
     tags: Optional[List[str]] = None
     next_step: Optional[str] = None
 
 
-# =========================
-# FALLBACK PARSER (FAST)
-# =========================
+class TodayResponse(BaseModel):
+    today: List[TaskRow]
+    overdue: List[TaskRow]
+    total_estimated_minutes_today: int
+
+
+class StatsResponse(BaseModel):
+    total: int
+    done: int
+    pending: int
+    by_priority: Dict[str, int]
+    top_tags: List[Dict[str, Any]]  # [{"tag": "...", "count": 3}, ...]
+
+
+# ---------- FALLBACK PARSER ----------
 BULLET_PREFIX = re.compile(r"^\s*([-*•]|(\d+[\.\)]))\s+")
 MULTISPACE = re.compile(r"\s+")
 
@@ -155,7 +198,6 @@ def split_to_tasks(text: str) -> List[str]:
 
         out.append(line)
 
-    # fallback: keď nič nevyjde z riadkov, rozdeľ podľa ";"
     if not out:
         parts = [p.strip() for p in text.split(";") if p.strip()]
         out = [MULTISPACE.sub(" ", p) for p in parts if len(p) >= 3]
@@ -179,10 +221,15 @@ def smart_tags(title: str) -> List[str]:
     if not tags:
         tags.append("osobné")
 
-    return tags[:5]
+    # unikátne + limit
+    uniq: List[str] = []
+    for x in tags:
+        if x not in uniq:
+            uniq.append(x)
+    return uniq[:5]
 
 
-def smart_priority(title: str) -> str:
+def smart_priority(title: str) -> Priority:
     t = title.lower()
     if any(w in t for w in URGENT_WORDS):
         return "high"
@@ -226,9 +273,7 @@ def fallback_response(text: str, mode: str) -> ParseResponse:
     return ParseResponse(tasks=tasks, mode=mode)
 
 
-# =========================
-# AI PARSER (optional)
-# =========================
+# ---------- AI (voliteľné) ----------
 SYSTEM_PROMPT = """
 Vráť VÝHRADNE validný JSON podľa schémy:
 
@@ -291,17 +336,12 @@ def is_quota_error(e: Exception) -> bool:
     return ("insufficient_quota" in msg) or ("error code: 429" in msg) or ("429" in msg)
 
 
-# =========================
-# ENDPOINTS: SYSTEM
-# =========================
+# ---------- ROUTES ----------
 @app.get("/", tags=["System"])
 def root():
     return {"status": "running"}
 
 
-# =========================
-# ENDPOINTS: PARSER
-# =========================
 @app.post("/parse_fast", response_model=ParseResponse, tags=["Parser"])
 def parse_fast(req: ParseRequest):
     return fallback_response(req.text, mode="fast")
@@ -321,7 +361,6 @@ def parse_ai(req: ParseRequest):
 
 @app.post("/parse", response_model=ParseResponse, tags=["Parser"])
 def parse_auto(req: ParseRequest):
-    # Auto: ak nemáš client alebo dôjde quota, padne na fast
     if client is None:
         return fallback_response(req.text, mode="auto-fast")
 
@@ -339,15 +378,10 @@ def parse_auto(req: ParseRequest):
 
 @app.post("/smart_add", response_model=SaveTasksResponse, tags=["Parser"])
 def smart_add(req: ParseRequest):
-    """
-    1) Parse text -> tasks (fast parser)
-    2) Save tasks -> DB
-    """
+    # 1) parse text -> tasks (fast parser)
     parsed = fallback_response(req.text, mode="smart-add")
 
-    if not parsed.tasks:
-        return SaveTasksResponse(inserted_ids=[])
-
+    # 2) save tasks -> DB
     conn = db_conn()
     cur = conn.cursor()
 
@@ -360,75 +394,16 @@ def smart_add(req: ParseRequest):
             INSERT INTO tasks (title, priority, estimate_min, deadline, tags_json, next_step, done, created_at)
             VALUES (?, ?, ?, ?, ?, ?, 0, ?)
             """,
-            (t.title, t.priority, t.estimate_min, t.deadline, json.dumps(t.tags), t.next_step, now),
+            (t.title, t.priority, t.estimate_min, t.deadline, dumps_tags(t.tags), t.next_step, now),
         )
         inserted.append(int(cur.lastrowid))
 
     conn.commit()
     conn.close()
-
     return SaveTasksResponse(inserted_ids=inserted)
 
 
-# =========================
-# ENDPOINTS: TASKS (DB)
-# =========================
-@app.get("/tasks", response_model=List[TaskRow], tags=["Tasks"])
-def list_tasks(done: Optional[bool] = None):
-    conn = db_conn()
-    cur = conn.cursor()
-
-    if done is None:
-        cur.execute("SELECT * FROM tasks ORDER BY done ASC, created_at DESC")
-    else:
-        cur.execute("SELECT * FROM tasks WHERE done = ? ORDER BY created_at DESC", (1 if done else 0,))
-
-    rows = cur.fetchall()
-    conn.close()
-
-    out: List[TaskRow] = []
-    for r in rows:
-        out.append(
-            TaskRow(
-                id=r["id"],
-                title=r["title"],
-                priority=r["priority"],
-                estimate_min=r["estimate_min"],
-                deadline=r["deadline"],
-                tags=json.loads(r["tags_json"]) if r["tags_json"] else [],
-                next_step=r["next_step"],
-                done=bool(r["done"]),
-                created_at=r["created_at"],
-            )
-        )
-    return out
-
-
-@app.get("/tasks/{task_id}", response_model=TaskRow, tags=["Tasks"])
-def get_task(task_id: int):
-    conn = db_conn()
-    cur = conn.cursor()
-
-    cur.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
-    row = cur.fetchone()
-    conn.close()
-
-    if row is None:
-        raise HTTPException(status_code=404, detail="Task not found")
-
-    return TaskRow(
-        id=row["id"],
-        title=row["title"],
-        priority=row["priority"],
-        estimate_min=row["estimate_min"],
-        deadline=row["deadline"],
-        tags=json.loads(row["tags_json"]) if row["tags_json"] else [],
-        next_step=row["next_step"],
-        done=bool(row["done"]),
-        created_at=row["created_at"],
-    )
-
-
+# ---------- TASKS / CRUD ----------
 @app.post("/tasks", response_model=SaveTasksResponse, tags=["Tasks"])
 def save_tasks(req: SaveTasksRequest):
     if not req.tasks:
@@ -446,14 +421,90 @@ def save_tasks(req: SaveTasksRequest):
             INSERT INTO tasks (title, priority, estimate_min, deadline, tags_json, next_step, done, created_at)
             VALUES (?, ?, ?, ?, ?, ?, 0, ?)
             """,
-            (t.title, t.priority, t.estimate_min, t.deadline, json.dumps(t.tags), t.next_step, now),
+            (t.title, t.priority, t.estimate_min, t.deadline, dumps_tags(t.tags), t.next_step, now),
         )
         inserted.append(int(cur.lastrowid))
 
     conn.commit()
     conn.close()
-
     return SaveTasksResponse(inserted_ids=inserted)
+
+
+@app.get("/tasks", response_model=List[TaskRow], tags=["Tasks"])
+def list_tasks(
+    done: Optional[bool] = Query(default=None),
+    q: Optional[str] = Query(default=None, description="Fulltext (LIKE) cez title + next_step"),
+    tag: Optional[str] = Query(default=None, description="Filter podľa tagu"),
+    priority: Optional[Priority] = Query(default=None),
+    sort: SortMode = Query(default="newest", description="newest|oldest|prio|estimate"),
+):
+    where: List[str] = []
+    params: List[Any] = []
+
+    if done is not None:
+        where.append("done = ?")
+        params.append(1 if done else 0)
+
+    if priority is not None:
+        where.append("priority = ?")
+        params.append(priority)
+
+    if q:
+        where.append("(title LIKE ? OR next_step LIKE ?)")
+        like = f"%{q.strip()}%"
+        params.extend([like, like])
+
+    if tag:
+        # Keď ukladáme tags_json s ensure_ascii=False, stačí tento LIKE.
+        # (Ak máš staré dáta s \u00e1, najjednoduchšie je zmazať todo.db počas vývoja.)
+        where.append("tags_json LIKE ?")
+        params.append(f'%"{tag.strip()}"%')
+
+    sql = "SELECT * FROM tasks"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+
+    if sort == "newest":
+        sql += " ORDER BY created_at DESC"
+    elif sort == "oldest":
+        sql += " ORDER BY created_at ASC"
+    elif sort == "estimate":
+        sql += " ORDER BY estimate_min ASC, created_at DESC"
+    elif sort == "prio":
+        # high -> medium -> low
+        sql += """
+        ORDER BY
+          CASE priority
+            WHEN 'high' THEN 0
+            WHEN 'medium' THEN 1
+            WHEN 'low' THEN 2
+            ELSE 9
+          END,
+          estimate_min ASC,
+          created_at DESC
+        """
+
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute(sql, tuple(params))
+    rows = cur.fetchall()
+    conn.close()
+
+    return [row_to_taskrow(r) for r in rows]
+
+
+@app.get("/tasks/{task_id}", response_model=TaskRow, tags=["Tasks"])
+def get_task(task_id: int):
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
+    row = cur.fetchone()
+    conn.close()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    return row_to_taskrow(row)
 
 
 @app.patch("/tasks/{task_id}", response_model=TaskRow, tags=["Tasks"])
@@ -467,8 +518,8 @@ def update_task(task_id: int, req: UpdateTaskRequest):
         conn.close()
         raise HTTPException(status_code=404, detail="Task not found")
 
-    fields = []
-    values = []
+    fields: List[str] = []
+    values: List[Any] = []
 
     if req.title is not None:
         fields.append("title = ?")
@@ -484,7 +535,7 @@ def update_task(task_id: int, req: UpdateTaskRequest):
         values.append(req.deadline)
     if req.tags is not None:
         fields.append("tags_json = ?")
-        values.append(json.dumps(req.tags))
+        values.append(dumps_tags(req.tags))
     if req.next_step is not None:
         fields.append("next_step = ?")
         values.append(req.next_step)
@@ -502,17 +553,7 @@ def update_task(task_id: int, req: UpdateTaskRequest):
     row2 = cur.fetchone()
     conn.close()
 
-    return TaskRow(
-        id=row2["id"],
-        title=row2["title"],
-        priority=row2["priority"],
-        estimate_min=row2["estimate_min"],
-        deadline=row2["deadline"],
-        tags=json.loads(row2["tags_json"]) if row2["tags_json"] else [],
-        next_step=row2["next_step"],
-        done=bool(row2["done"]),
-        created_at=row2["created_at"],
-    )
+    return row_to_taskrow(row2)
 
 
 @app.patch("/tasks/{task_id}/done", response_model=TaskRow, tags=["Tasks"])
@@ -534,17 +575,7 @@ def toggle_done(task_id: int):
     row2 = cur.fetchone()
     conn.close()
 
-    return TaskRow(
-        id=row2["id"],
-        title=row2["title"],
-        priority=row2["priority"],
-        estimate_min=row2["estimate_min"],
-        deadline=row2["deadline"],
-        tags=json.loads(row2["tags_json"]) if row2["tags_json"] else [],
-        next_step=row2["next_step"],
-        done=bool(row2["done"]),
-        created_at=row2["created_at"],
-    )
+    return row_to_taskrow(row2)
 
 
 @app.delete("/tasks/{task_id}", tags=["Tasks"])
@@ -561,3 +592,102 @@ def delete_task(task_id: int):
         raise HTTPException(status_code=404, detail="Task not found")
 
     return {"deleted": True, "id": task_id}
+
+
+# ---------- TODAY + STATS ----------
+@app.get("/today", response_model=TodayResponse, tags=["Tasks"])
+def today_tasks(include_done: bool = Query(default=False, description="Ak true, ukáže aj dokončené úlohy")):
+    d = today_yyyy_mm_dd()
+
+    conn = db_conn()
+    cur = conn.cursor()
+
+    base_done_clause = "" if include_done else "AND done = 0"
+
+    # today
+    cur.execute(
+        f"""
+        SELECT * FROM tasks
+        WHERE deadline = ?
+        {base_done_clause}
+        ORDER BY
+          CASE priority
+            WHEN 'high' THEN 0
+            WHEN 'medium' THEN 1
+            WHEN 'low' THEN 2
+            ELSE 9
+          END,
+          estimate_min ASC,
+          created_at DESC
+        """,
+        (d,),
+    )
+    rows_today = cur.fetchall()
+
+    # overdue
+    cur.execute(
+        f"""
+        SELECT * FROM tasks
+        WHERE deadline IS NOT NULL
+          AND deadline < ?
+        {base_done_clause}
+        ORDER BY deadline ASC,
+          CASE priority
+            WHEN 'high' THEN 0
+            WHEN 'medium' THEN 1
+            WHEN 'low' THEN 2
+            ELSE 9
+          END,
+          estimate_min ASC
+        """,
+        (d,),
+    )
+    rows_overdue = cur.fetchall()
+
+    conn.close()
+
+    today_list = [row_to_taskrow(r) for r in rows_today]
+    overdue_list = [row_to_taskrow(r) for r in rows_overdue]
+    total_est = sum(t.estimate_min for t in today_list)
+
+    return TodayResponse(today=today_list, overdue=overdue_list, total_estimated_minutes_today=total_est)
+
+
+@app.get("/stats", response_model=StatsResponse, tags=["Tasks"])
+def stats():
+    conn = db_conn()
+    cur = conn.cursor()
+
+    cur.execute("SELECT COUNT(*) AS c FROM tasks")
+    total = int(cur.fetchone()["c"])
+
+    cur.execute("SELECT COUNT(*) AS c FROM tasks WHERE done = 1")
+    done_cnt = int(cur.fetchone()["c"])
+
+    pending = total - done_cnt
+
+    cur.execute("SELECT priority, COUNT(*) AS c FROM tasks GROUP BY priority")
+    by_priority: Dict[str, int] = {"high": 0, "medium": 0, "low": 0}
+    for r in cur.fetchall():
+        by_priority[str(r["priority"])] = int(r["c"])
+
+    # top tags: načítame tags_json a spočítame v Pythone (jednoduché a spoľahlivé)
+    cur.execute("SELECT tags_json FROM tasks")
+    tag_counts: Dict[str, int] = {}
+    for r in cur.fetchall():
+        tags = loads_tags(r["tags_json"])
+        for t in tags:
+            tag_counts[t] = tag_counts.get(t, 0) + 1
+
+    conn.close()
+
+    top = sorted(tag_counts.items(), key=lambda x: (-x[1], x[0]))[:10]
+    top_tags = [{"tag": k, "count": v} for k, v in top]
+
+    return StatsResponse(
+        total=total,
+        done=done_cnt,
+        pending=pending,
+        by_priority=by_priority,
+        top_tags=top_tags,
+    )
